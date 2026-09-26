@@ -1,0 +1,98 @@
+name: macOS 27 app launch
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: xcode-27
+    timeout-minutes: 15
+
+    steps:
+      - name: System
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "===== SYSTEM ====="
+          uname -m
+          sw_vers
+
+          echo
+          echo "===== GPU ====="
+          system_profiler SPDisplaysDataType || true
+
+          test "$(uname -m)" = "arm64"
+
+      - name: Download Demo
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP="$RUNNER_TEMP/demo.zip"
+
+          curl -fL \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/demo-25544208/UnderThePool-notarization.zip" \
+            -o "$ZIP"
+
+          EXPECTED="787f5b6214c4617fad8b9cac0f49156f6069132d9807af4ac4c10ae073525c4b"
+          ACTUAL="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
+
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+
+          test "$ACTUAL" = "$EXPECTED"
+
+          mkdir -p "$RUNNER_TEMP/demo"
+          ditto -x -k "$ZIP" "$RUNNER_TEMP/demo"
+
+          test -d "$RUNNER_TEMP/demo/UnderThePool.app"
+
+      - name: Verify app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="$RUNNER_TEMP/demo/UnderThePool.app"
+
+          codesign --verify --deep --strict --verbose=4 "$APP"
+          xcrun stapler validate "$APP"
+          spctl --assess --type execute -vvv "$APP"
+
+      - name: Launch app bundle through LaunchServices
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="$RUNNER_TEMP/demo/UnderThePool.app"
+          LOG="$RUNNER_TEMP/game.log"
+
+          echo "===== EXECUTABLE ====="
+
+          /usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleExecutable' \
+            "$APP/Contents/Info.plist"
+
+          echo
+          echo "===== LAUNCH .APP ====="
+
+          open -W -n "$APP" \
+            --args \
+            --quit-after 180 \
+            --verbose \
+            --log-file "$LOG"
+
+          echo
+          echo "===== GODOT LOG ====="
+
+          cat "$LOG" || true
+
+          echo
+          echo "===== RENDERER ====="
+
+          grep -E -i \
+            'metal|vulkan|renderer|rendering|gpu|device|display' \
+            "$LOG" || true
+
+          echo
+          echo "PASS: macOS 27 launched the actual .app bundle."
