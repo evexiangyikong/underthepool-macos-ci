@@ -1,0 +1,123 @@
+name: macOS ASCII candidate test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ASCII / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - macos-15
+          - macos-26
+          - xcode-27
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - name: System
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "===== SYSTEM ====="
+          uname -m
+          sw_vers
+          system_profiler SPDisplaysDataType || true
+
+          test "$(uname -m)" = "arm64"
+
+      - name: Download candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP="$RUNNER_TEMP/demo.zip"
+
+          curl -fL \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/demo-ascii-candidate-20260926/UnderThePool-notarization.zip" \
+            -o "$ZIP"
+
+          EXPECTED="bae2a0dcbda37415d0b854b580fc0bac1ec16021965da5e478bf4c5c8903727c"
+          ACTUAL="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
+
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+
+          test "$ACTUAL" = "$EXPECTED"
+
+          mkdir -p "$RUNNER_TEMP/demo"
+          ditto -x -k "$ZIP" "$RUNNER_TEMP/demo"
+
+          test -d "$RUNNER_TEMP/demo/UnderThePool.app"
+
+      - name: Verify bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="$RUNNER_TEMP/demo/UnderThePool.app"
+          INFO="$APP/Contents/Info.plist"
+
+          EXEC="$(
+            /usr/libexec/PlistBuddy \
+              -c 'Print :CFBundleExecutable' \
+              "$INFO"
+          )"
+
+          DISPLAY="$(
+            /usr/libexec/PlistBuddy \
+              -c 'Print :CFBundleDisplayName' \
+              "$INFO"
+          )"
+
+          echo "CFBundleExecutable: $EXEC"
+          echo "CFBundleDisplayName: $DISPLAY"
+
+          test "$EXEC" = "UnderThePoolDemo"
+          test "$DISPLAY" = "池中之物demo"
+
+          test -x "$APP/Contents/MacOS/UnderThePoolDemo"
+          test -f "$APP/Contents/Resources/UnderThePoolDemo.pck"
+
+          file "$APP/Contents/MacOS/UnderThePoolDemo"
+          lipo -archs "$APP/Contents/MacOS/UnderThePoolDemo"
+
+          codesign --verify --deep --strict --verbose=4 "$APP"
+          xcrun stapler validate "$APP"
+          spctl --assess --type execute -vvv "$APP"
+
+      - name: Launch actual app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="$RUNNER_TEMP/demo/UnderThePool.app"
+          LOG="$RUNNER_TEMP/game.log"
+
+          echo "===== LAUNCH THROUGH macOS ====="
+
+          open -W -n "$APP" \
+            --args \
+            --quit-after 180 \
+            --verbose \
+            --log-file "$LOG"
+
+          echo
+          echo "===== GODOT LOG ====="
+
+          cat "$LOG" || true
+
+          echo
+          echo "===== RENDERER ====="
+
+          grep -E -i \
+            'metal|vulkan|renderer|rendering|gpu|device|display' \
+            "$LOG" || true
+
+          echo
+          echo "PASS: ASCII candidate launched successfully."
