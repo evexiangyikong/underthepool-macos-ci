@@ -1,0 +1,169 @@
+name: macOS M1 compatibility
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: M1 / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - macos-15
+          - macos-26
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    steps:
+      - name: System information
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "===== ARCH ====="
+          uname -m
+
+          echo
+          echo "===== MACOS ====="
+          sw_vers
+
+          echo
+          echo "===== CPU ====="
+          sysctl -n machdep.cpu.brand_string || true
+
+          test "$(uname -m)" = "arm64"
+
+      - name: Download current public Demo test archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/demo-25544208/UnderThePool-notarization.zip"
+          ZIP="$RUNNER_TEMP/demo.zip"
+
+          curl -fL \
+            --retry 3 \
+            --retry-delay 2 \
+            "$URL" \
+            -o "$ZIP"
+
+          echo "===== SHA256 ====="
+          shasum -a 256 "$ZIP"
+
+          ACTUAL="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
+          EXPECTED="787f5b6214c4617fad8b9cac0f49156f6069132d9807af4ac4c10ae073525c4b"
+
+          test "$ACTUAL" = "$EXPECTED"
+
+          mkdir -p "$RUNNER_TEMP/demo"
+
+          ditto -x -k \
+            "$ZIP" \
+            "$RUNNER_TEMP/demo"
+
+          test -d "$RUNNER_TEMP/demo/UnderThePool.app"
+
+      - name: Verify architecture, signature and notarization
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="$RUNNER_TEMP/demo/UnderThePool.app"
+
+          EXEC="$(
+            /usr/libexec/PlistBuddy \
+              -c 'Print :CFBundleExecutable' \
+              "$APP/Contents/Info.plist"
+          )"
+
+          BIN="$APP/Contents/MacOS/$EXEC"
+
+          echo "===== EXECUTABLE ====="
+          echo "$BIN"
+
+          echo
+          echo "===== FILE ====="
+          file "$BIN"
+
+          echo
+          echo "===== ARCHITECTURES ====="
+          lipo -archs "$BIN"
+
+          echo
+          echo "===== CODESIGN ====="
+          codesign \
+            --verify \
+            --deep \
+            --strict \
+            --verbose=4 \
+            "$APP"
+
+          echo
+          echo "===== STAPLER ====="
+          xcrun stapler validate "$APP"
+
+          echo
+          echo "===== GATEKEEPER ====="
+          spctl \
+            --assess \
+            --type execute \
+            -vvv \
+            "$APP"
+
+          lipo -archs "$BIN" | grep -q "arm64"
+
+      - name: Launch ARM64 Godot executable
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="$RUNNER_TEMP/demo/UnderThePool.app"
+
+          EXEC="$(
+            /usr/libexec/PlistBuddy \
+              -c 'Print :CFBundleExecutable' \
+              "$APP/Contents/Info.plist"
+          )"
+
+          BIN="$APP/Contents/MacOS/$EXEC"
+          LOG="$RUNNER_TEMP/godot.log"
+
+          echo "===== GODOT VERSION / DYLD STARTUP ====="
+
+          arch -arm64 "$BIN" --version
+
+          echo
+          echo "===== HEADLESS GAME START ====="
+
+          set +e
+
+          arch -arm64 "$BIN" \
+            --headless \
+            --quit-after 180 \
+            --verbose \
+            --log-file "$LOG"
+
+          RC=$?
+
+          set -e
+
+          echo
+          echo "===== GAME LOG ====="
+
+          if [[ -f "$LOG" ]]; then
+              cat "$LOG"
+          fi
+
+          echo
+          echo "===== EXIT CODE ====="
+          echo "$RC"
+
+          if [[ "$RC" -ne 0 ]]; then
+              exit "$RC"
+          fi
+
+          echo
+          echo "PASS: game executable started and ran on ARM64."
